@@ -297,12 +297,12 @@ def main():
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=0.002, momentum=0.9, weight_decay=0.0001)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=12, gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=17, gamma=0.1)
 
     scaler = torch.amp.GradScaler('cuda')
     writer = SummaryWriter(log_dir=out_dir)
 
-    num_epochs = 20
+    num_epochs = 25
     best_loss = float('inf')
     accumulation_steps = 4 
 

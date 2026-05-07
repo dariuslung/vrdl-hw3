@@ -9,6 +9,7 @@ from pycocotools import mask as mask_utils
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
 from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
+from torchvision.ops import batched_nms
 
 # --- 1. Provided Assignment Helper Functions ---
 def decode_maskobj(mask_obj):
@@ -27,14 +28,14 @@ def read_maskfile(filepath):
 # --- 2. Model Setup (MUST match training architecture) ---
 def get_model_instance_segmentation(num_classes):
     model = maskrcnn_resnet50_fpn_v2(
-        weights=None, # No need to download ImageNet weights for inference
+        weights=None, 
         min_size=800,  
         max_size=1024,
         rpn_pre_nms_top_n_train=2000, 
         rpn_post_nms_top_n_train=1000, 
         rpn_pre_nms_top_n_test=1000,   
         rpn_post_nms_top_n_test=1000,  
-        box_detections_per_img=500
+        box_detections_per_img=500    
     )
     
     in_features = model.roi_heads.box_predictor.cls_score.in_features
@@ -53,20 +54,19 @@ def main():
     parser.add_argument("--test_dir", type=str, default="data/test_release", help="Directory with test images")
     parser.add_argument("--meta_json", type=str, default="data/test_image_name_to_ids.json", help="Path to image ID mapping")
     parser.add_argument("--output", type=str, default="test-results.json", help="Output JSON filename")
-    parser.add_argument("--score_threshold", type=float, default=0.5, help="Minimum confidence score to include in submission")
+    parser.add_argument("--score_threshold", type=float, default=0.5, help="Minimum confidence score")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
     print(f"Using device: {device}")
 
-    # 4 cell classes + 1 background class
     num_classes = 5 
     
     print(f"Loading model weights from {args.model_path}...")
     model = get_model_instance_segmentation(num_classes)
     model.load_state_dict(torch.load(args.model_path, map_location=device))
     model.to(device)
-    model.eval() # CRITICAL: Put model in evaluation mode
+    model.eval()
 
     print(f"Loading metadata from {args.meta_json}...")
     with open(args.meta_json, 'r') as f:
@@ -75,16 +75,19 @@ def main():
     coco_results = []
     total_images = len(test_metadata)
 
-    print(f"Starting inference on {total_images} images...")
+    # --- Sliding Window Parameters ---
+    PATCH_SIZE = 800
+    STRIDE = 600 # 200 pixel overlap to ensure cells on boundaries aren't cut in half
+    NMS_IOU_THRESHOLD = 0.3 # Threshold to remove duplicate boxes in overlapping regions
+
+    print(f"Starting Sliding Window Inference on {total_images} images...")
     
-    # We don't need gradients for inference
     with torch.no_grad():
         for i, img_info in enumerate(test_metadata):
             img_filename = img_info['file_name']
             img_id = img_info['id']
             img_path = os.path.join(args.test_dir, img_filename)
 
-            # 1. Load and process image exactly as in training
             img_array = sio.imread(img_path)
             
             if len(img_array.shape) == 2:
@@ -93,43 +96,99 @@ def main():
                 img_array = img_array[:, :, :3]
                 
             img_tensor = torch.as_tensor(img_array, dtype=torch.float32).permute(2, 0, 1) / 255.0
-            img_tensor = img_tensor.to(device)
-
-            # Dynamically set the transform bounds to the exact dimensions of the current test image.
-            # This forces the internal scale_factor to be exactly 1.0
             _, H, W = img_tensor.shape
-            model.transform.min_size = (min(H, W),)
-            model.transform.max_size = max(H, W)
 
-            # 2. Run Forward Pass
-            # For inference, the model takes a list of tensors and returns a list of dictionaries
-            # We also explicitly use autocast to match our mixed precision training footprint
-            with torch.autocast(device_type='cuda'):
-                predictions = model([img_tensor])[0] 
+            # 1. Generate Grid Coordinates
+            y_starts = list(range(0, H, STRIDE))
+            x_starts = list(range(0, W, STRIDE))
+            
+            # Ensure we cover the far right and bottom edges perfectly
+            if not y_starts or y_starts[-1] + PATCH_SIZE < H:
+                y_starts.append(max(0, H - PATCH_SIZE))
+            if not x_starts or x_starts[-1] + PATCH_SIZE < W:
+                x_starts.append(max(0, W - PATCH_SIZE))
+                
+            y_starts = sorted(list(set(y_starts)))
+            x_starts = sorted(list(set(x_starts)))
 
-            # 3. Extract outputs
-            masks = predictions['masks'].cpu().numpy()
-            scores = predictions['scores'].cpu().numpy()
-            labels = predictions['labels'].cpu().numpy()
+            all_boxes = []
+            all_scores = []
+            all_labels = []
+            all_masks = []
+            all_offsets = []
 
-            # 4. Filter and encode instances
+            # 2. Process Patches
+            for y in y_starts:
+                for x in x_starts:
+                    y_end = min(H, y + PATCH_SIZE)
+                    x_end = min(W, x + PATCH_SIZE)
+                    
+                    # Extract patch and send ONLY the patch to the GPU
+                    patch = img_tensor[:, y:y_end, x:x_end].to(device)
+                    pH, pW = patch.shape[1:]
+                    
+                    # Prevent internal resizing
+                    model.transform.min_size = (min(pH, pW),)
+                    model.transform.max_size = max(pH, pW)
+                    
+                    with torch.autocast(device_type='cuda'):
+                        pred = model([patch])[0]
+                    
+                    # Immediately pull results back to CPU to free VRAM
+                    boxes = pred['boxes'].cpu()
+                    scores = pred['scores'].cpu()
+                    labels = pred['labels'].cpu()
+                    masks = pred['masks'].cpu() > 0.5 # Binarize immediately to save CPU RAM
+                    
+                    if len(boxes) > 0:
+                        # Shift local patch bounding boxes to global image coordinates
+                        boxes[:, [0, 2]] += x
+                        boxes[:, [1, 3]] += y
+                        
+                        all_boxes.append(boxes)
+                        all_scores.append(scores)
+                        all_labels.append(labels)
+                        
+                        for m_idx in range(len(masks)):
+                            all_masks.append(masks[m_idx, 0]) 
+                            all_offsets.append((x, y, x_end, y_end))
+                    
+                    # Aggressive cleanup
+                    del patch, pred
+                    torch.cuda.empty_cache()
+
+            # 3. Reconstruct the Full Image
+            if len(all_boxes) == 0:
+                print(f"Processed {i + 1}/{total_images} | Added 0 instances for {img_filename}")
+                continue
+
+            all_boxes = torch.cat(all_boxes)
+            all_scores = torch.cat(all_scores)
+            all_labels = torch.cat(all_labels)
+
+            # Apply Batched NMS to remove duplicate detections in the overlapping regions
+            keep = batched_nms(all_boxes, all_scores, all_labels, iou_threshold=NMS_IOU_THRESHOLD)
+
             instances_added = 0
-            for j in range(len(scores)):
-                score = float(scores[j])
+            for k in keep:
+                idx = k.item()
+                score = float(all_scores[idx])
                 
                 if score < args.score_threshold:
                     continue
+                    
+                class_id = int(all_labels[idx])
+                mask_patch = all_masks[idx].numpy()
+                x, y, x_end, y_end = all_offsets[idx]
                 
-                class_id = int(labels[j])
+                # Place the small patch mask accurately onto a blank full-size canvas
+                full_mask = np.zeros((H, W), dtype=np.uint8)
+                patch_h = y_end - y
+                patch_w = x_end - x
+                full_mask[y:y_end, x:x_end] = mask_patch[:patch_h, :patch_w]
                 
-                # Mask R-CNN outputs a shape of [1, H, W] per instance. We need [H, W].
-                # Values are probabilities [0, 1]. We threshold at 0.5 for binary mask.
-                binary_mask = (masks[j, 0, :, :] > 0.5)
-                
-                # Encode the mask to COCO RLE format using the provided function
-                rle_mask = encode_mask(binary_mask)
+                rle_mask = encode_mask(full_mask)
 
-                # Append to our submission list
                 coco_results.append({
                     "image_id": img_id,
                     "category_id": class_id,
