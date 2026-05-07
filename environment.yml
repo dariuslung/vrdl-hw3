@@ -1,0 +1,24 @@
+name: ml
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - numpy
+  - pandas
+  - matplotlib
+  - opencv
+  - pillow
+  - scikit-image
+  - tifffile
+  - tensorboard
+  - pycocotools
+  - tqdm
+  - albumentations
+  - imagecodecs
