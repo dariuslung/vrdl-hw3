@@ -28,13 +28,13 @@ def read_maskfile(filepath):
 def get_model_instance_segmentation(num_classes):
     model = maskrcnn_resnet50_fpn_v2(
         weights=None, # No need to download ImageNet weights for inference
-        min_size=512,  
-        max_size=800,
-        rpn_pre_nms_top_n_train=1000, 
-        rpn_post_nms_top_n_train=500, 
-        rpn_pre_nms_top_n_test=500,   
-        rpn_post_nms_top_n_test=250,  
-        box_detections_per_img=100    
+        min_size=800,  
+        max_size=1024,
+        rpn_pre_nms_top_n_train=2000, 
+        rpn_post_nms_top_n_train=1000, 
+        rpn_pre_nms_top_n_test=1000,   
+        rpn_post_nms_top_n_test=1000,  
+        box_detections_per_img=500
     )
     
     in_features = model.roi_heads.box_predictor.cls_score.in_features
@@ -53,7 +53,7 @@ def main():
     parser.add_argument("--test_dir", type=str, default="data/test_release", help="Directory with test images")
     parser.add_argument("--meta_json", type=str, default="data/test_image_name_to_ids.json", help="Path to image ID mapping")
     parser.add_argument("--output", type=str, default="test-results.json", help="Output JSON filename")
-    parser.add_argument("--score_threshold", type=float, default=0.05, help="Minimum confidence score to include in submission")
+    parser.add_argument("--score_threshold", type=float, default=0.5, help="Minimum confidence score to include in submission")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
@@ -94,6 +94,12 @@ def main():
                 
             img_tensor = torch.as_tensor(img_array, dtype=torch.float32).permute(2, 0, 1) / 255.0
             img_tensor = img_tensor.to(device)
+
+            # Dynamically set the transform bounds to the exact dimensions of the current test image.
+            # This forces the internal scale_factor to be exactly 1.0
+            _, H, W = img_tensor.shape
+            model.transform.min_size = (min(H, W),)
+            model.transform.max_size = max(H, W)
 
             # 2. Run Forward Pass
             # For inference, the model takes a list of tensors and returns a list of dictionaries

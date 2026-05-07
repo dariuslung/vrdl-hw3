@@ -23,7 +23,7 @@ htmlcov/
 # data
 data/
 test-results.*
-sanity_check.png
+sanity_check*
 
 # tensorboard
 outputs/

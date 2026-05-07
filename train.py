@@ -201,11 +201,11 @@ def get_model_instance_segmentation(num_classes):
         weights="DEFAULT",
         min_size=800,  
         max_size=1024,
-        rpn_pre_nms_top_n_train=1000, 
-        rpn_post_nms_top_n_train=500, 
-        rpn_pre_nms_top_n_test=500,   
-        rpn_post_nms_top_n_test=250,  
-        box_detections_per_img=100    
+        rpn_pre_nms_top_n_train=2000, 
+        rpn_post_nms_top_n_train=1000, 
+        rpn_pre_nms_top_n_test=1000,   
+        rpn_post_nms_top_n_test=1000,  
+        box_detections_per_img=500
     )
     
     in_features = model.roi_heads.box_predictor.cls_score.in_features
@@ -297,12 +297,12 @@ def main():
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=0.002, momentum=0.9, weight_decay=0.0001)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5, gamma=0.1)
+    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=12, gamma=0.1)
 
     scaler = torch.amp.GradScaler('cuda')
     writer = SummaryWriter(log_dir=out_dir)
 
-    num_epochs = 15
+    num_epochs = 20
     best_loss = float('inf')
     accumulation_steps = 4 
 
