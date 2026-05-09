@@ -17,6 +17,7 @@ from tqdm import tqdm # Optional, for a progress bar
 # --- NEW: Import v2 transforms and tv_tensors ---
 from torchvision.transforms import v2 as T
 from torchvision import tv_tensors
+from torchvision.models.detection.anchor_utils import AnchorGenerator
 
 
 def check_class_imbalance(dataset):
@@ -196,21 +197,42 @@ class MedicalCellDataset(Dataset):
         return img_tensor, target
 
 # --- 3. Model Setup ---
-def get_model_instance_segmentation(num_classes):
+def get_model_instance_segmentation(num_classes, is_training=True):
+    # Load ImageNet weights for training, use None for inference
+    weights = "DEFAULT" if is_training else None
+    
     model = maskrcnn_resnet50_fpn_v2(
-        weights="DEFAULT",
+        weights=weights,
         min_size=800,  
         max_size=1024,
         rpn_pre_nms_top_n_train=2000, 
         rpn_post_nms_top_n_train=1000, 
         rpn_pre_nms_top_n_test=1000,   
         rpn_post_nms_top_n_test=1000,  
-        box_detections_per_img=500
+        box_detections_per_img=500    
     )
     
+    # --- ASSIGNMENT MODIFICATION: Custom Micro-Anchors ---
+    # Default Mask R-CNN anchors are designed for large natural objects: (32, 64, 128, 256, 512)
+    # We shift the scales down to detect micro-scale medical cells.
+    # Note: FPN models require exactly 5 anchor sizes (one for each feature map level).
+    anchor_sizes = ((16,), (32,), (64,), (128,), (256,))
+    aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
+    
+    micro_anchor_generator = AnchorGenerator(
+        sizes=anchor_sizes,
+        aspect_ratios=aspect_ratios
+    )
+    
+    # Inject the customized module into the Region Proposal Network (RPN)
+    model.rpn.anchor_generator = micro_anchor_generator
+    # ----------------------------------------------------
+    
+    # Replace the bounding box predictor head
     in_features = model.roi_heads.box_predictor.cls_score.in_features
     model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
     
+    # Replace the mask predictor head
     in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
     hidden_layer = 256
     model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
@@ -292,7 +314,7 @@ def main():
     dataset_val = torch.utils.data.Subset(dataset, indices[train_size:])
     data_loader_val = DataLoader(dataset_val, batch_size=1, shuffle=False, collate_fn=collate_fn, num_workers=4)
 
-    model = get_model_instance_segmentation(num_classes)
+    model = get_model_instance_segmentation(num_classes, is_training=True)
     model.to(device)
 
     params = [p for p in model.parameters() if p.requires_grad]
