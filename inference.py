@@ -54,7 +54,7 @@ def main():
     parser.add_argument("--test_dir", type=str, default="data/test_release", help="Directory with test images")
     parser.add_argument("--meta_json", type=str, default="data/test_image_name_to_ids.json", help="Path to image ID mapping")
     parser.add_argument("--output", type=str, default="test-results.json", help="Output JSON filename")
-    parser.add_argument("--score_threshold", type=float, default=0.5, help="Minimum confidence score")
+    parser.add_argument("--score_threshold", type=float, default=0.15, help="Minimum confidence score")
     args = parser.parse_args()
 
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
