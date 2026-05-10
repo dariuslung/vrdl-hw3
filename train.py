@@ -205,6 +205,7 @@ def get_model_instance_segmentation(num_classes, is_training=True):
     
     model = maskrcnn_resnet50_fpn_v2(
         weights=weights,
+        trainable_backbone_layers=5,
         min_size=800,  
         max_size=1024,
         rpn_pre_nms_top_n_train=2000, 
