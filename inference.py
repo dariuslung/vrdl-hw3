@@ -11,8 +11,11 @@ from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
 from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
 from torchvision.ops import batched_nms
 from torchvision.models.detection.anchor_utils import AnchorGenerator
+from torchvision.ops import MultiScaleRoIAlign
 
-# --- 1. Provided Assignment Helper Functions ---
+from train import get_model_instance_segmentation
+
+# --- Provided Assignment Helper Functions ---
 def decode_maskobj(mask_obj):
     return mask_utils.decode(mask_obj)
 
@@ -26,50 +29,7 @@ def read_maskfile(filepath):
     mask_array = sio.imread(filepath)
     return mask_array
 
-# --- 2. Model Setup (MUST match training architecture) ---
-def get_model_instance_segmentation(num_classes, is_training=False):
-    # Load ImageNet weights for training, use None for inference
-    weights = "DEFAULT" if is_training else None
-    
-    model = maskrcnn_resnet50_fpn_v2(
-        weights=weights,
-        min_size=800,  
-        max_size=1024,
-        rpn_pre_nms_top_n_train=2000, 
-        rpn_post_nms_top_n_train=1000, 
-        rpn_pre_nms_top_n_test=1000,   
-        rpn_post_nms_top_n_test=1000,  
-        box_detections_per_img=500    
-    )
-    
-    # --- ASSIGNMENT MODIFICATION: Custom Micro-Anchors ---
-    # Default Mask R-CNN anchors are designed for large natural objects: (32, 64, 128, 256, 512)
-    # We shift the scales down to detect micro-scale medical cells.
-    # Note: FPN models require exactly 5 anchor sizes (one for each feature map level).
-    anchor_sizes = ((16,), (32,), (64,), (128,), (256,))
-    aspect_ratios = ((0.5, 1.0, 2.0),) * len(anchor_sizes)
-    
-    micro_anchor_generator = AnchorGenerator(
-        sizes=anchor_sizes,
-        aspect_ratios=aspect_ratios
-    )
-    
-    # Inject the customized module into the Region Proposal Network (RPN)
-    model.rpn.anchor_generator = micro_anchor_generator
-    # ----------------------------------------------------
-    
-    # Replace the bounding box predictor head
-    in_features = model.roi_heads.box_predictor.cls_score.in_features
-    model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-    
-    # Replace the mask predictor head
-    in_features_mask = model.roi_heads.mask_predictor.conv5_mask.in_channels
-    hidden_layer = 256
-    model.roi_heads.mask_predictor = MaskRCNNPredictor(in_features_mask, hidden_layer, num_classes)
-    
-    return model
-
-# --- 3. Main Inference Execution ---
+# --- Main Inference Execution ---
 def main():
     parser = argparse.ArgumentParser(description="Run Inference and Generate COCO Results")
     parser.add_argument("--model_path", type=str, required=True, help="Path to best_model.pth")

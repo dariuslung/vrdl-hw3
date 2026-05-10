@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from torchvision.utils import draw_segmentation_masks
 import torchvision.transforms.functional as F
 import numpy as np
-from inference import get_model_instance_segmentation # Import your model func
+from train import get_model_instance_segmentation
 
 device = torch.device('cuda')
 

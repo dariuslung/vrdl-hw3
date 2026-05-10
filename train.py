@@ -205,14 +205,18 @@ def get_model_instance_segmentation(num_classes, is_training=True):
     
     model = maskrcnn_resnet50_fpn_v2(
         weights=weights,
-        trainable_backbone_layers=5,
         min_size=800,  
         max_size=1024,
         rpn_pre_nms_top_n_train=2000, 
         rpn_post_nms_top_n_train=1000, 
-        rpn_pre_nms_top_n_test=1000,   
-        rpn_post_nms_top_n_test=1000,  
-        box_detections_per_img=500    
+
+        # --- INCREASED INFERENCE CAPS ---
+        # Feed more proposals to the ROI heads
+        rpn_pre_nms_top_n_test=2000,   
+        rpn_post_nms_top_n_test=2000,  
+        
+        # Allow up to 1000 cells per 800x800 patch!
+        box_detections_per_img=1000,
     )
     
     # --- ASSIGNMENT MODIFICATION: Custom Micro-Anchors ---
