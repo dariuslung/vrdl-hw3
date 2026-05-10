@@ -55,25 +55,17 @@ def check_class_imbalance(dataset):
 def get_transforms(train=True):
     transforms = []
     if train:
-        # 1. Lighting & Stain Simulation (Crucial for medical images)
-        transforms.append(T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2))
-        
-        # 2. Rotational Invariance
+        # Crop to 800x800. Pad images that are smaller than 800.
+        transforms.append(T.RandomCrop(size=(800, 800), pad_if_needed=True))
+        # Add random flips to improve AP50
         transforms.append(T.RandomHorizontalFlip(p=0.5))
         transforms.append(T.RandomVerticalFlip(p=0.5))
-        
-        # 3. Multi-Scale Training (The Heavy Hitter)
-        # Randomly scale the image up or down before cropping to simulate different zoom levels
-        transforms.append(T.RandomShortestSize(
-            min_size=[600, 700, 800, 900, 1000, 1100], 
-            max_size=1500, 
-            antialias=True
-        ))
-        
-        # 4. Final crop to keep VRAM strictly under 8GB
-        transforms.append(T.RandomCrop(size=(800, 800), pad_if_needed=True))
-        
+        # Lighting & Stain Simulation (Crucial for medical images)
+        transforms.append(T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2))
+    
+    # Ensure boxes that are cut out entirely by the crop are removed
     transforms.append(T.SanitizeBoundingBoxes())
+    
     return T.Compose(transforms)
 
 # --- 2. Dataset Definition ---
@@ -319,6 +311,8 @@ def main():
         num_workers=4
     )
     
+    num_epochs = 30
+
     # To keep validation consistent, we can evaluate on crops, or implement a separate uncropped dataset
     # Applying the same transforms to validation for memory stability
     dataset_val = torch.utils.data.Subset(dataset, indices[train_size:])
@@ -329,12 +323,13 @@ def main():
 
     params = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.SGD(params, lr=0.002, momentum=0.9, weight_decay=0.0001)
-    lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=17, gamma=0.1)
+
+    # Smoothly decay the LR from 0.002 down to 0.00001 over the 30 epochs
+    lr_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=num_epochs, eta_min=1e-5)
 
     scaler = torch.amp.GradScaler('cuda')
     writer = SummaryWriter(log_dir=out_dir)
 
-    num_epochs = 25
     best_loss = float('inf')
     accumulation_steps = 4 
 
@@ -386,12 +381,19 @@ def main():
 
         lr_scheduler.step()
         
+        # --- Extract current learning rate ---
+        current_lr = optimizer.param_groups[0]['lr']
+        
         avg_train_loss = epoch_train_loss / len(data_loader)
         avg_val_loss = epoch_val_loss / len(data_loader_val)
         
-        print(f"Epoch: {epoch+1}/{num_epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        print(f"Epoch: {epoch+1}/{num_epochs} | LR: {current_lr:.6f} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
+        
         writer.add_scalar('Loss/train_epoch', avg_train_loss, epoch)
         writer.add_scalar('Loss/val_epoch', avg_val_loss, epoch)
+        
+        # --- Log LR to TensorBoard ---
+        writer.add_scalar('Hyperparameters/Learning_Rate', current_lr, epoch)
 
         latest_model_path = os.path.join(out_dir, "latest_model.pth")
         best_model_path = os.path.join(out_dir, "best_model.pth")
