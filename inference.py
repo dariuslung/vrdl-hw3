@@ -145,22 +145,70 @@ def main():
                     y_end = min(H, y + PATCH_SIZE)
                     x_end = min(W, x + PATCH_SIZE)
                     
-                    # Extract patch and send ONLY the patch to the GPU
+                    # Extract patch and send to GPU
                     patch = img_tensor[:, y:y_end, x:x_end].to(device)
                     pH, pW = patch.shape[1:]
                     
-                    # Prevent internal resizing
                     model.transform.min_size = (min(pH, pW),)
                     model.transform.max_size = max(pH, pW)
                     
-                    with torch.autocast(device_type='cuda'):
-                        pred = model([patch])[0]
+                    boxes_list = []
+                    scores_list = []
+                    labels_list = []
+                    masks_list = []
                     
-                    # Immediately pull results back to CPU to free VRAM
-                    boxes = pred['boxes'].cpu()
-                    scores = pred['scores'].cpu()
-                    labels = pred['labels'].cpu()
-                    masks = pred['masks'].cpu() > 0.5 # Binarize immediately to save CPU RAM
+                    with torch.autocast(device_type='cuda'):
+                        # --- PASS 1: Standard Prediction ---
+                        pred = model([patch])[0]
+                        
+                        # Instantly move to CPU and binarize to save VRAM!
+                        boxes = pred['boxes'].cpu()
+                        scores = pred['scores'].cpu()
+                        labels = pred['labels'].cpu()
+                        masks = pred['masks'].cpu() > 0.5 
+                        
+                        boxes_list.append(boxes)
+                        scores_list.append(scores)
+                        labels_list.append(labels)
+                        masks_list.append(masks)
+                        
+                        # Delete GPU tensors and clear cache BEFORE running TTA
+                        del pred
+                        torch.cuda.empty_cache()
+                        
+                        # --- PASS 2: TTA Flipped Prediction ---
+                        patch_flipped = torch.flip(patch, dims=[2])
+                        pred_flipped = model([patch_flipped])[0]
+                        
+                        boxes_f = pred_flipped['boxes'].cpu()
+                        scores_f = pred_flipped['scores'].cpu()
+                        labels_f = pred_flipped['labels'].cpu()
+                        masks_f = pred_flipped['masks'].cpu() > 0.5
+                        
+                        # Clean up GPU again
+                        del patch, patch_flipped, pred_flipped
+                        torch.cuda.empty_cache()
+                    
+                    # --- 3. "Un-flip" the TTA predictions (Done safely on CPU) ---
+                    if len(boxes_f) > 0:
+                        # Reverse the X coordinates: new_x = width - old_x
+                        xmin = pW - boxes_f[:, 2]
+                        xmax = pW - boxes_f[:, 0]
+                        boxes_f[:, 0] = xmin
+                        boxes_f[:, 2] = xmax
+                        
+                        masks_f = torch.flip(masks_f, dims=[3])
+                        
+                        boxes_list.append(boxes_f)
+                        scores_list.append(scores_f)
+                        labels_list.append(labels_f)
+                        masks_list.append(masks_f)
+
+                    # Concatenate the standard and TTA predictions
+                    boxes = torch.cat(boxes_list)
+                    scores = torch.cat(scores_list)
+                    labels = torch.cat(labels_list)
+                    masks = torch.cat(masks_list)
                     
                     if len(boxes) > 0:
                         # Shift local patch bounding boxes to global image coordinates
@@ -174,10 +222,6 @@ def main():
                         for m_idx in range(len(masks)):
                             all_masks.append(masks[m_idx, 0]) 
                             all_offsets.append((x, y, x_end, y_end))
-                    
-                    # Aggressive cleanup
-                    del patch, pred
-                    torch.cuda.empty_cache()
 
             # 3. Reconstruct the Full Image
             if len(all_boxes) == 0:

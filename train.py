@@ -55,15 +55,25 @@ def check_class_imbalance(dataset):
 def get_transforms(train=True):
     transforms = []
     if train:
-        # Crop to 800x800. Pad images that are smaller than 800.
-        transforms.append(T.RandomCrop(size=(800, 800), pad_if_needed=True))
-        # Add random flips to improve AP50
+        # 1. Lighting & Stain Simulation (Crucial for medical images)
+        transforms.append(T.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.2))
+        
+        # 2. Rotational Invariance
         transforms.append(T.RandomHorizontalFlip(p=0.5))
         transforms.append(T.RandomVerticalFlip(p=0.5))
-    
-    # Ensure boxes that are cut out entirely by the crop are removed
+        
+        # 3. Multi-Scale Training (The Heavy Hitter)
+        # Randomly scale the image up or down before cropping to simulate different zoom levels
+        transforms.append(T.RandomShortestSize(
+            min_size=[600, 700, 800, 900, 1000, 1100], 
+            max_size=1500, 
+            antialias=True
+        ))
+        
+        # 4. Final crop to keep VRAM strictly under 8GB
+        transforms.append(T.RandomCrop(size=(800, 800), pad_if_needed=True))
+        
     transforms.append(T.SanitizeBoundingBoxes())
-    
     return T.Compose(transforms)
 
 # --- 2. Dataset Definition ---
