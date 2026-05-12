@@ -1,4 +1,4 @@
-# NYCU Visual Recognition using Deep Learning - Spring 2026 - Homework 2
+# NYCU Visual Recognition using Deep Learning - Spring 2026 - Homework 3
 
 - Student ID: 314561005
 - Name: 龍偉亮
